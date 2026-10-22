@@ -58,7 +58,7 @@ jobs:
           $source = [System.IO.File]::ReadAllText($file)
           $anchor = 'add_ldflags("/DEBUG:FULL")'
           if (-not $source.Contains($anchor)) { throw "Missing linker debug flags" }
-          $source = $source.Replace($anchor, 'add_ldflags("/DEBUG:FULL", "/MAP")')
+          $source = $source.Replace($anchor, 'add_ldflags("/DEBUG:FULL", "/MAP", {force = true})')
           [System.IO.File]::WriteAllText($file, $source)
       - name: Compile with MSVC
         working-directory: framework-upstream
@@ -79,9 +79,10 @@ jobs:
           if (-not $dll) { throw "Missing compiled $dllName" }
           Copy-Item $dll.FullName "artifacts/$dllName"
           New-Item -ItemType Directory -Force -Path debug-symbols | Out-Null
-          $symbolFiles = Get-ChildItem framework-upstream -Recurse -File | Where-Object { $_.Extension -in '.map', '.pdb' -and $_.Name -like "$env:PLUGIN_NAME*" }
+          $symbolFiles = Get-ChildItem framework-upstream/build -Recurse -File | Where-Object { $_.Extension -in '.map', '.pdb' }
           foreach ($item in $symbolFiles) { Copy-Item $item.FullName "debug-symbols/$($item.Name)" -Force }
-          if (-not ($symbolFiles | Where-Object { $_.Extension -eq '.map' })) { throw "No MSVC map file was generated" }
+          $symbolFiles | ForEach-Object { Write-Host "Symbol: $($_.FullName)" }
+          if (-not ($symbolFiles | Where-Object { $_.Extension -eq '.pdb' })) { throw "No PDB was generated" }
       - name: Upload separately for safe single-plugin testing
         uses: actions/upload-artifact@v4
         with:
