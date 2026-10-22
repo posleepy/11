@@ -1,0 +1,78 @@
+name: Codeware and TweakXL - 2.50 diagnostic builds
+on:
+  push:
+    branches: [codeware-tweakxl-250-diagnostics]
+    paths:
+      - ".github/workflows/build-frameworks-250.yml"
+      - "build/patch_framework_250.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: "${{ matrix.plugin }} - Windows x64"
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: Codeware
+            repo: psiberx/cp2077-codeware
+            tag: v1.20.6
+          - plugin: TweakXL
+            repo: psiberx/cp2077-tweak-xl
+            tag: v1.11.5
+    steps:
+      - name: Checkout build configuration
+        uses: actions/checkout@v4
+      - name: Install xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+      - name: Clone upstream plugin and load 2.50-compatible SDK
+        shell: pwsh
+        env:
+          SOURCE_REPO: "${{ matrix.repo }}"
+          SOURCE_TAG: "${{ matrix.tag }}"
+        run: |
+          git clone --branch $env:SOURCE_TAG --depth 1 --recurse-submodules "https://github.com/$env:SOURCE_REPO.git" framework-upstream
+          if ($LASTEXITCODE -ne 0) { throw "Clone failed" }
+          git -C framework-upstream submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw "Submodule update failed" }
+          git -C framework-upstream/vendor/RED4ext.SDK fetch --depth 1 origin 0f5eba42a4cf3a1161ad3de0b4ed6f1901ec169e
+          if ($LASTEXITCODE -ne 0) { throw "SDK update fetch failed" }
+          git -C framework-upstream/vendor/RED4ext.SDK checkout --detach 0f5eba42a4cf3a1161ad3de0b4ed6f1901ec169e
+          if ($LASTEXITCODE -ne 0) { throw "SDK checkout failed" }
+      - name: Apply diagnostic patch
+        shell: pwsh
+        env:
+          PLUGIN_NAME: "${{ matrix.plugin }}"
+        run: |
+          python build/patch_framework_250.py framework-upstream $env:PLUGIN_NAME
+          if ($LASTEXITCODE -ne 0) { throw "Patch failed" }
+      - name: Compile with MSVC
+        working-directory: framework-upstream
+        shell: pwsh
+        run: |
+          xmake f -p windows -a x64 -m release -y
+          if ($LASTEXITCODE -ne 0) { throw "Configure failed" }
+          xmake -y
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+      - name: Collect plugin binary
+        shell: pwsh
+        env:
+          PLUGIN_NAME: "${{ matrix.plugin }}"
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $dllName = "$env:PLUGIN_NAME.dll"
+          $dll = Get-ChildItem framework-upstream/build -Recurse -File -Filter $dllName | Select-Object -First 1
+          if (-not $dll) { throw "Missing compiled $dllName" }
+          Copy-Item $dll.FullName "artifacts/$dllName"
+      - name: Upload separately for safe single-plugin testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ matrix.plugin }}-SDK-2.50-diagnostic-Windows-x64"
+          path: artifacts/*.dll
+          if-no-files-found: error
+          retention-days: 14
