@@ -1,0 +1,66 @@
+name: ArchiveXL 2.50 diagnostic Windows build
+
+on:
+  push:
+    branches:
+      - archive-xl-250-build
+    paths:
+      - ".github/workflows/build-archive-xl.yml"
+      - "build/patch_250.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout diagnostic patch repo
+        uses: actions/checkout@v4
+
+      - name: Install xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Clone official ArchiveXL 1.27.5 source
+        shell: pwsh
+        run: |
+          git clone --branch v1.27.5 --depth 1 --recurse-submodules https://github.com/psiberx/cp2077-archive-xl.git archivexl-upstream
+          if ($LASTEXITCODE -ne 0) { throw "Source clone failed" }
+          git -C archivexl-upstream submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw "Submodule checkout failed" }
+
+      - name: Apply startup diagnostic instrumentation
+        shell: pwsh
+        run: |
+          python build/patch_250.py archivexl-upstream
+          if ($LASTEXITCODE -ne 0) { throw "Patch application failed" }
+
+      - name: Build ArchiveXL.dll using MSVC
+        working-directory: archivexl-upstream
+        shell: pwsh
+        run: |
+          xmake f -p windows -a x64 -m release -y
+          if ($LASTEXITCODE -ne 0) { throw "xmake configure failed" }
+          xmake -y
+          if ($LASTEXITCODE -ne 0) { throw "xmake compilation failed" }
+
+      - name: Collect diagnostic DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $dll = Get-ChildItem -Path archivexl-upstream/build -Recurse -File -Filter ArchiveXL.dll | Select-Object -First 1
+          if (-not $dll) { throw "ArchiveXL.dll was not produced" }
+          Copy-Item $dll.FullName artifacts/ArchiveXL.dll
+          Write-Host "Built: $($dll.FullName)"
+
+      - name: Upload diagnostic DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArchiveXL-2.50-diagnostic-Windows-x64
+          path: artifacts/ArchiveXL.dll
+          if-no-files-found: error
+          retention-days: 14
