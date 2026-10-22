@@ -168,3 +168,42 @@ void Codeware250LogWidgetMissing(uint32_t hash) noexcept {
     ])
     print("Codeware: guarded unavailable UI widget-spawning hook (diagnostic only).")
 print(f"{plugin}: added nonfatal scan of {len(defs)} addresses.")
+
+
+# Earliest possible safe phase trace: before application constructor and before bootstrap.
+# Avoid filesystem/iostream inside DllMain; Main is invoked outside loader lock.
+entry_trace = r"""
+#include <windows.h>
+namespace {
+void Framework250EntryTrace(const char* message) noexcept {
+    wchar_t tempDir[MAX_PATH] = {};
+    const DWORD n = GetTempPathW(MAX_PATH, tempDir);
+    if (!n || n >= MAX_PATH) return;
+    wchar_t path[MAX_PATH] = {};
+    if (wcscpy_s(path, MAX_PATH, tempDir) != 0) return;
+    if (wcscat_s(path, MAX_PATH, L"__PLUGIN__-250-entry.log") != 0) return;
+    HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(f, message, static_cast<DWORD>(strlen(message)), &written, nullptr);
+    WriteFile(f, "\r\n", 2, &written, nullptr);
+    CloseHandle(f);
+}
+}
+""".replace("__PLUGIN__", plugin)
+edit("src/main.cpp", [
+    ('#include "Core/Facades/Runtime.hpp"\n',
+     '#include "Core/Facades/Runtime.hpp"\n#include <cstring>\n' + entry_trace),
+    ('    switch (aReason)\n    {\n    case RED4ext::v1::EMainReason::Load:',
+     '    Framework250EntryTrace("entry.Main.called");\n    switch (aReason)\n    {\n    case RED4ext::v1::EMainReason::Load:'),
+    ('        g_app = Core::MakeUnique<App::Application>(aHandle, aSdk);',
+     '        Framework250EntryTrace("entry.BeforeConstructor");\n        g_app = Core::MakeUnique<App::Application>(aHandle, aSdk);\n        Framework250EntryTrace("entry.AfterConstructor");'),
+    ('        g_app->Bootstrap();',
+     '        Framework250EntryTrace("entry.BeforeBootstrap");\n        g_app->Bootstrap();\n        Framework250EntryTrace("entry.AfterBootstrap");'),
+    ('RED4EXT_C_EXPORT void RED4EXT_CALL Query(RED4ext::v1::PluginInfo* aInfo)\n{',
+     'RED4EXT_C_EXPORT void RED4EXT_CALL Query(RED4ext::v1::PluginInfo* aInfo)\n{\n    Framework250EntryTrace("entry.Query.called");'),
+    ('RED4EXT_C_EXPORT uint32_t RED4EXT_CALL Supports()\n{',
+     'RED4EXT_C_EXPORT uint32_t RED4EXT_CALL Supports()\n{\n    Framework250EntryTrace("entry.Supports.called");')
+])
+print(f"{plugin}: added entry trace before plugin constructor.")
