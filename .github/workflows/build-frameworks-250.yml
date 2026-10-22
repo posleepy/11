@@ -51,6 +51,15 @@ jobs:
         run: |
           python build/patch_framework_250.py framework-upstream $env:PLUGIN_NAME
           if ($LASTEXITCODE -ne 0) { throw "Patch failed" }
+      - name: Enable function address map
+        shell: pwsh
+        run: |
+          $file = "framework-upstream/xmake.lua"
+          $source = [System.IO.File]::ReadAllText($file)
+          $anchor = 'add_ldflags("/DEBUG:FULL")'
+          if (-not $source.Contains($anchor)) { throw "Missing linker debug flags" }
+          $source = $source.Replace($anchor, 'add_ldflags("/DEBUG:FULL", "/MAP")')
+          [System.IO.File]::WriteAllText($file, $source)
       - name: Compile with MSVC
         working-directory: framework-upstream
         shell: pwsh
@@ -69,10 +78,21 @@ jobs:
           $dll = Get-ChildItem framework-upstream/build -Recurse -File -Filter $dllName | Select-Object -First 1
           if (-not $dll) { throw "Missing compiled $dllName" }
           Copy-Item $dll.FullName "artifacts/$dllName"
+          New-Item -ItemType Directory -Force -Path debug-symbols | Out-Null
+          $symbolFiles = Get-ChildItem framework-upstream -Recurse -File | Where-Object { $_.Extension -in '.map', '.pdb' -and $_.Name -like "$env:PLUGIN_NAME*" }
+          foreach ($item in $symbolFiles) { Copy-Item $item.FullName "debug-symbols/$($item.Name)" -Force }
+          if (-not ($symbolFiles | Where-Object { $_.Extension -eq '.map' })) { throw "No MSVC map file was generated" }
       - name: Upload separately for safe single-plugin testing
         uses: actions/upload-artifact@v4
         with:
           name: "${{ matrix.plugin }}-SDK-2.50-diagnostic-Windows-x64"
           path: artifacts/*.dll
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload debug symbols and linker map
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ matrix.plugin }}-250-symbols-for-crash-analysis"
+          path: debug-symbols/*
           if-no-files-found: error
           retention-days: 14
