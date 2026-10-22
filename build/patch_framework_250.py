@@ -75,3 +75,96 @@ s = s.replace(line, line[:-1] + ', "mimalloc")', 1)
 s = 'add_repositories("framework250-local local-xmake-repo", {rootdir = os.scriptdir()})\n' + s
 buildfile.write_text(s, encoding="utf-8")
 print(f"{plugin}: diagnostic instrumentation and 2.50 dependencies applied.")
+
+
+# The 2.50 RED4ext address list has changed. Enumerate unresolved symbols
+# nonfatally through the exported resolver rather than calling RawFunc
+# (which terminates the game with an address error dialog).
+import re
+library = (root / "src/Red/Addresses/Library.hpp").read_text(encoding="utf-8")
+defs = re.findall(r'^\s*constexpr uint32_t (\w+) = (\d+);', library, re.M)
+if len(defs) < 10:
+    raise RuntimeError(f"Unexpected {plugin} address table: {len(defs)} hashes")
+entry_lines = ',\n'.join(f'      {{"{name}", {hashval}u}}' for name, hashval in defs)
+scanner = r"""
+#include <windows.h>
+namespace {
+void __PLUGIN__250ProbeAddressHashes() noexcept {
+    using Resolver = uintptr_t (*)(uint32_t);
+    auto module = GetModuleHandleW(L"RED4ext.dll");
+    auto resolver = module ? reinterpret_cast<Resolver>(
+        GetProcAddress(module, "RED4ext_ResolveAddress")) : nullptr;
+    try {
+        std::ofstream out(std::filesystem::temp_directory_path() / "__PLUGIN__-250-diag.log", std::ios::app);
+        if (!resolver) { out << "address.RESOLVER_NOT_AVAILABLE" << std::endl; return; }
+        struct Entry { const char* name; uint32_t hash; };
+        static constexpr Entry entries[] = {
+__ENTRIES__
+        };
+        size_t missing = 0;
+        for (const auto& item : entries) {
+            if (resolver(item.hash) == 0) {
+                ++missing;
+                out << "address.MISSING " << item.name << " hash=" << item.hash << std::endl;
+            }
+        }
+        out << "address.SUMMARY total=" << (sizeof(entries)/sizeof(entries[0]))
+            << " missing=" << missing << std::endl;
+    } catch (...) {}
+}
+}
+""".replace("__PLUGIN__", plugin).replace("__ENTRIES__", entry_lines)
+edit("src/App/Application.cpp", [
+    ('void App::Application::OnStarting()\n{',
+     scanner + '\nvoid App::Application::OnStarting()\n{'),
+    ('    Trace250Framework("app.OnStarting.begin");',
+     '    Trace250Framework("app.OnStarting.begin");\n    ' + plugin + '250ProbeAddressHashes();'),
+])
+# This particular hash is absent in CP2077 2.50 and belongs to the Codeware
+# widget-spawning hook. Disable ONLY the incomplete service for a controlled
+# boot test; without it, Codeware's UI features won't function.
+if plugin == "Codeware":
+    widget_guard = r"""
+#include <windows.h>
+#include <fstream>
+#include <filesystem>
+namespace {
+bool s_250WidgetHooksActive = false;
+bool Codeware250WidgetAddressAvailable(uint32_t hash) noexcept {
+    auto module = GetModuleHandleW(L"RED4ext.dll");
+    if (!module) return false;
+    using ResolveFunc = uintptr_t (*)(uint32_t);
+    auto resolve = reinterpret_cast<ResolveFunc>(GetProcAddress(module, "RED4ext_ResolveAddress"));
+    return resolve && resolve(hash) != 0;
+}
+void Codeware250LogWidgetMissing(uint32_t hash) noexcept {
+    try {
+        std::ofstream out(std::filesystem::temp_directory_path() / "Codeware-250-diag.log", std::ios::app);
+        out << "Codeware.widget.SKIPPED_MISSING_ADDRESS hash=" << hash << std::endl;
+    } catch (...) {}
+}
+}
+"""
+    edit("src/App/UI/WidgetSpawningService.cpp", [
+        ('#include "App/Callback/Events/InkWidgetSpawnEvent.hpp"\n',
+         '#include "App/Callback/Events/InkWidgetSpawnEvent.hpp"\n' + widget_guard),
+        ('void App::WidgetSpawningService::OnBootstrap()\n{\n',
+         '''void App::WidgetSpawningService::OnBootstrap()
+{
+    static constexpr uint32_t required[] = {1158555307u, 506278179u, 118698863u, 1396063719u, 2698985195u};
+    for (uint32_t hash : required) {
+        if (!Codeware250WidgetAddressAvailable(hash)) {
+            Codeware250LogWidgetMissing(hash);
+            return;
+        }
+    }
+    s_250WidgetHooksActive = true;
+'''),
+        ('void App::WidgetSpawningService::OnShutdown()\n{\n',
+         '''void App::WidgetSpawningService::OnShutdown()
+{
+    if (!s_250WidgetHooksActive) return;
+'''),
+    ])
+    print("Codeware: guarded unavailable UI widget-spawning hook (diagnostic only).")
+print(f"{plugin}: added nonfatal scan of {len(defs)} addresses.")
