@@ -32,6 +32,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Source clone failed" }
           git -C archivexl-upstream submodule update --init --recursive
           if ($LASTEXITCODE -ne 0) { throw "Submodule checkout failed" }
+          # Official RED4ext.SDK patch 2.50 support, commit 0f5eba42 (#227).
+          git -C archivexl-upstream/vendor/RED4ext.SDK fetch --depth 1 origin 0f5eba42a4cf3a1161ad3de0b4ed6f1901ec169e
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch RED4ext.SDK 2.50 changes" }
+          git -C archivexl-upstream/vendor/RED4ext.SDK checkout --detach 0f5eba42a4cf3a1161ad3de0b4ed6f1901ec169e
+          if ($LASTEXITCODE -ne 0) { throw "Could not checkout RED4ext.SDK 2.50 changes" }
 
       - name: Apply startup diagnostic instrumentation
         shell: pwsh
@@ -60,7 +65,7 @@ jobs:
       - name: Upload diagnostic DLL
         uses: actions/upload-artifact@v4
         with:
-          name: ArchiveXL-2.50-diagnostic-Windows-x64
+          name: ArchiveXL-2.50-SDK-updated-diagnostic-Windows-x64
           path: artifacts/ArchiveXL.dll
           if-no-files-found: error
           retention-days: 14
