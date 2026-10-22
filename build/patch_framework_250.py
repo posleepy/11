@@ -207,3 +207,52 @@ edit("src/main.cpp", [
      'RED4EXT_C_EXPORT uint32_t RED4EXT_CALL Supports()\n{\n    Framework250EntryTrace("entry.Supports.called");')
 ])
 print(f"{plugin}: added entry trace before plugin constructor.")
+
+
+# The CP2077 2.50 minidump exposes a changed ScriptBundle layout. The
+# class-array pointer is stored at bundle+0xD8 (valid heap allocation with
+# class pointers), while Codeware 1.20.6 expects +0xD0 (null). Shift the
+# script-definition array fields from +0x90 by eight bytes. This is a
+# narrowly scoped experimental fix, verified against the 2.50 crash dump.
+if plugin == "Codeware":
+    edit("src/Red/ScriptBundle.hpp", [
+        ('    DynArray<ScriptFileInfo*> files;                     // 90',
+         '    uint64_t unk90_250;                                   // 90 - extra 2.50 bundle field\n'
+         '    DynArray<ScriptFileInfo*> files;                     // 98'),
+        ('    DynArray<ScriptFunction*> globals;                   // A0',
+         '    DynArray<ScriptFunction*> globals;                   // A8'),
+        ('    DynArray<ScriptEnum*> enums;                         // B0',
+         '    DynArray<ScriptEnum*> enums;                         // B8'),
+        ('    DynArray<ScriptBitfield*> bitfields;                 // C0',
+         '    DynArray<ScriptBitfield*> bitfields;                 // C8'),
+        ('    DynArray<ScriptClass*> classes;                      // D0',
+         '    DynArray<ScriptClass*> classes;                      // D8'),
+        ('    DynArray<ScriptType*> types;                         // E0',
+         '    DynArray<ScriptType*> types;                         // E8'),
+        ('    DynArray<CString> strings;                           // F0',
+         '    DynArray<CString> strings;                           // F8'),
+        ('    HashMap<CName, void*> unk100;                        // 100',
+         '    HashMap<CName, void*> unk100;                        // 108'),
+        ('    SharedSpinLock typesLock;                            // 130',
+         '    SharedSpinLock typesLock;                            // 138'),
+        ('    CRITICAL_SECTION unk138;                             // 138',
+         '    CRITICAL_SECTION unk138;                             // 140'),
+        ('RED4EXT_ASSERT_SIZE(ScriptBundle, 0x160);',
+         'RED4EXT_ASSERT_SIZE(ScriptBundle, 0x168);')
+    ])
+    edit("src/App/Scripting/ScriptingService.cpp", [
+        ('void App::ScriptingService::OnValidateScripts(void* aValidator, Red::ScriptBundle* aBundle, void* aReport)\n{',
+         '''void App::ScriptingService::OnValidateScripts(void* aValidator, Red::ScriptBundle* aBundle, void* aReport)
+{
+    if (!aBundle)
+    {
+        LogError("Codeware 2.50: ScriptBundle is null, skipping validation compatibility hook");
+        return;
+    }
+    if (aBundle->classes.Size() && !aBundle->classes.Data())
+    {
+        LogError("Codeware 2.50: ScriptBundle classes header is invalid, skipping validation compatibility hook");
+        return;
+    }''')
+    ])
+    print("Codeware: ScriptBundle class array corrected to +0xD8, guarded malformed arrays.")
