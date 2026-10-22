@@ -86,3 +86,32 @@ original = original.replace(packages_anchor,
     packages_anchor.replace('"yaml-cpp")', '"yaml-cpp", "mimalloc")'), 1)
 buildfile.write_text(original, encoding="utf-8")
 print("Pinned and linked mimalloc v2.2.4 for TiltedCore compatibility.")
+
+
+# Override the *transitive* TiltedCore dependency too, so xmake does not
+# secretly bring in mimalloc 3.x alongside our explicit mimalloc 2.x.
+recipe_path = root / "local-xmake-repo" / "packages" / "t" / "tiltedcore" / "xmake.lua"
+recipe_path.parent.mkdir(parents=True, exist_ok=True)
+recipe_path.write_text(r'''package("tiltedcore")
+    set_homepage("https://github.com/tiltedphoques/TiltedCore")
+    set_description("Core library from Tilted Phoques (mimalloc 2.2.4 override)")
+    add_urls("https://github.com/tiltedphoques/TiltedCore/archive/$(version).zip")
+    add_urls("https://github.com/tiltedphoques/TiltedCore.git")
+    add_versions("v0.2.9", "aa8dd5aee40c53fd57da91ef5193458b62f3dec420e78fac9dc8293a987b9758")
+    add_configs("shared", {description = "Build shared library.", default = false, type = "boolean", readonly = true})
+    add_deps("mimalloc v2.2.4", {configs = {rltgenrandom = true}})
+    on_install("windows", "mingw", "linux", "cross", "android", "macosx|!arm*", function (package)
+        import("package.tools.xmake").install(package)
+    end)
+    on_test(function (package)
+        assert(package:check_cxxsnippets({test = [[
+            void test(int args, char** argv) {
+                TiltedPhoques::Outcome<int, float> outcome;
+            }
+        ]]}, {includes = {"TiltedCore/Outcome.hpp"}}))
+    end)
+''', encoding="utf-8")
+config = buildfile.read_text(encoding="utf-8")
+config = 'add_repositories("archive-xl-local local-xmake-repo", {rootdir = os.scriptdir()})\\n' + config
+buildfile.write_text(config.replace('\\\\n', '\\n'), encoding="utf-8")
+print("Pinned TiltedCore transitive mimalloc dependency to 2.2.4.")
