@@ -256,3 +256,14 @@ if plugin == "Codeware":
     }''')
     ])
     print("Codeware: ScriptBundle class array corrected to +0xD8, guarded malformed arrays.")
+
+
+# Isolation test: don't hook native ScriptValidator::Validate in CP2077 2.50.
+# This bypasses a known suspect crash path in OnValidateScripts. This build is
+# NOT a functional replacement: script type compatibility features may break.
+if plugin == "Codeware":
+    edit("src/App/Scripting/ScriptingService.cpp", [
+        ('    HookBefore<Raw::ScriptValidator::Validate>(&OnValidateScripts).OrThrow();',
+         '    LogWarning("Codeware 2.50 ISOLATION BUILD: ScriptValidator.Validate hook disabled (not for normal gameplay)");')
+    ])
+    print("Codeware: disabled ScriptValidator.Validate hook for crash isolation only.")
