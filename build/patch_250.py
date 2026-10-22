@@ -115,3 +115,27 @@ config = buildfile.read_text(encoding="utf-8")
 config = 'add_repositories("archive-xl-local local-xmake-repo", {rootdir = os.scriptdir()})\n' + config
 buildfile.write_text(config, encoding="utf-8")
 print("Pinned TiltedCore transitive mimalloc dependency to 2.2.4.")
+
+
+# Locate the failure inside RTTI callback registration, preserving the original code.
+registrar = "lib/Red/TypeInfo/Registrar.hpp"
+edit(registrar, [
+    ('#pragma once\n', '''#pragma once
+#include <fstream>
+#include <filesystem>
+namespace {
+inline void TraceRTTI250(const char* msg) noexcept {
+    try {
+        std::ofstream out(std::filesystem::temp_directory_path() / "ArchiveXL-250-diag.log", std::ios::app);
+        out << msg << std::endl;
+    } catch (...) {}
+}
+}
+'''),
+    ('        QueuePendingRegisterCallbacks();\n        QueuePendingDescribeCallbacks();',
+     '        TraceRTTI250("rtti.register.begin");\n        QueuePendingRegisterCallbacks();\n        TraceRTTI250("rtti.register.end");\n        QueuePendingDescribeCallbacks();\n        TraceRTTI250("rtti.describe.end");'),
+    ('            CRTTISystem::Get()->AddRegisterCallback(&OnRegister);',
+     '            TraceRTTI250("rtti.GetForRegister.begin");\n            auto* sys = CRTTISystem::Get();\n            TraceRTTI250("rtti.GetForRegister.end");\n            if (!sys) { TraceRTTI250("rtti.GetForRegister.NULL"); return; }\n            TraceRTTI250("rtti.AddRegister.begin");\n            sys->AddRegisterCallback(&OnRegister);\n            TraceRTTI250("rtti.AddRegister.end");'),
+    ('            CRTTISystem::Get()->AddPostRegisterCallback(&OnDescribe);',
+     '            TraceRTTI250("rtti.GetForDescribe.begin");\n            auto* sys = CRTTISystem::Get();\n            TraceRTTI250("rtti.GetForDescribe.end");\n            if (!sys) { TraceRTTI250("rtti.GetForDescribe.NULL"); return; }\n            TraceRTTI250("rtti.AddDescribe.begin");\n            sys->AddPostRegisterCallback(&OnDescribe);\n            TraceRTTI250("rtti.AddDescribe.end");')
+])
