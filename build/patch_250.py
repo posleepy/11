@@ -139,3 +139,82 @@ inline void TraceRTTI250(const char* msg) noexcept {
     ('            CRTTISystem::Get()->AddPostRegisterCallback(&OnDescribe);',
      '            TraceRTTI250("rtti.GetForDescribe.begin");\n            auto* sys = CRTTISystem::Get();\n            TraceRTTI250("rtti.GetForDescribe.end");\n            if (!sys) { TraceRTTI250("rtti.GetForDescribe.NULL"); return; }\n            TraceRTTI250("rtti.AddDescribe.begin");\n            sys->AddPostRegisterCallback(&OnDescribe);\n            TraceRTTI250("rtti.AddDescribe.end");')
 ])
+
+
+# Probe ALL ArchiveXL address hashes using RED4ext's non-fatal native resolver.
+# Skip only the unresolved archive hook, so the rest of initialization can be diagnosed.
+import re
+address_text = (root / "src/Red/Addresses/Library.hpp").read_text(encoding="utf-8")
+hashes = re.findall(r'^\s*constexpr uint32_t (\w+) = (\d+);', address_text, re.M)
+if len(hashes) < 60:
+    raise RuntimeError(f"Unexpected number of ArchiveXL address definitions: {len(hashes)}")
+table = ",\n".join(f'        {{"{name}", {num}u}}' for name, num in hashes)
+probe = r"""
+#include <windows.h>
+#include <fstream>
+#include <filesystem>
+namespace {
+using ArchiveXL250Resolver = uintptr_t (*)(uint32_t);
+struct ArchiveXL250Address { const char* name; uint32_t hash; };
+void ArchiveXL250ArchiveTrace(const char* msg) noexcept {
+    try {
+        std::ofstream out(std::filesystem::temp_directory_path() / "ArchiveXL-250-diag.log", std::ios::app);
+        out << msg << std::endl;
+    } catch (...) {}
+}
+bool ArchiveXL250ProbeAddressLibrary() noexcept {
+    const auto module = GetModuleHandleW(L"RED4ext.dll");
+    if (!module) {
+        ArchiveXL250ArchiveTrace("archive.RED4ext.dll.MISSING");
+        return false;
+    }
+    const auto resolver = reinterpret_cast<ArchiveXL250Resolver>(
+        GetProcAddress(module, "RED4ext_ResolveAddress"));
+    if (!resolver) {
+        ArchiveXL250ArchiveTrace("archive.RED4ext_ResolveAddress.MISSING");
+        return false;
+    }
+    static constexpr ArchiveXL250Address entries[] = {
+__ADDRESS_ENTRIES__
+    };
+    unsigned missing = 0;
+    for (const auto& entry : entries) {
+        if (!resolver(entry.hash)) {
+            ++missing;
+            try {
+                std::ofstream out(std::filesystem::temp_directory_path() / "ArchiveXL-250-diag.log", std::ios::app);
+                out << "address.MISSING " << entry.name << " hash=" << entry.hash << std::endl;
+            } catch (...) {}
+        }
+    }
+    try {
+        std::ofstream out(std::filesystem::temp_directory_path() / "ArchiveXL-250-diag.log", std::ios::app);
+        out << "address.SUMMARY total=" << (sizeof(entries)/sizeof(entries[0]))
+            << " missing=" << missing << std::endl;
+    } catch (...) {}
+    return resolver(2885423437u) != 0;
+}
+}
+""".replace("__ADDRESS_ENTRIES__", table)
+edit("src/App/Archives/ArchiveService.cpp", [
+    ('#include "Core/Facades/Runtime.hpp"\n',
+     '#include "Core/Facades/Runtime.hpp"\n' + probe),
+    ('void App::ArchiveService::OnBootstrap()\n{\n    HookAfter<Raw::ResourceDepot::InitializeArchives>(&ArchiveService::OnInitializeArchives).OrThrow();\n}',
+     '''void App::ArchiveService::OnBootstrap()
+{
+    ArchiveXL250ArchiveTrace("archive.OnBootstrap.begin");
+    if (!ArchiveXL250ProbeAddressLibrary()) {
+        ArchiveXL250ArchiveTrace("archive.OnBootstrap.SKIPPED_UNRESOLVED_INITIALIZE_ARCHIVES");
+        return;
+    }
+    HookAfter<Raw::ResourceDepot::InitializeArchives>(&ArchiveService::OnInitializeArchives).OrThrow();
+    ArchiveXL250ArchiveTrace("archive.OnBootstrap.end");
+}'''),
+    ('void App::ArchiveService::OnShutdown()\n{\n    Unhook<Raw::ResourceDepot::InitializeArchives>();\n}',
+     '''void App::ArchiveService::OnShutdown()
+{
+    if (IsHooked<Raw::ResourceDepot::InitializeArchives>())
+        Unhook<Raw::ResourceDepot::InitializeArchives>();
+}'''),
+])
+print(f"Added non-fatal address scan for {len(hashes)} ArchiveXL hashes and skip for known missing archive hook.")
