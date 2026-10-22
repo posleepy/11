@@ -70,3 +70,19 @@ edit(red, [
      '    TraceRed250("RegisterDiscovered.begin");\n    Red::TypeInfoRegistrar::RegisterDiscovered();\n    TraceRed250("RegisterDiscovered.end");')
 ])
 print("Instrumented three source files successfully.")
+
+
+# Xmake currently chooses mimalloc v3 for a transitive TiltedCore dependency.
+# TiltedCore v0.2.9 still references mi_malloc_size; pin compatible v2 and link explicitly.
+buildfile = root / "xmake.lua"
+original = buildfile.read_text(encoding="utf-8")
+require_anchor = 'add_requires("hopscotch-map", "minhook", "spdlog", "tiltedcore", "yaml-cpp")'
+packages_anchor = '    add_packages("hopscotch-map", "minhook", "spdlog", "tiltedcore", "yaml-cpp")'
+if original.count(require_anchor) != 1 or original.count(packages_anchor) != 1:
+    raise RuntimeError("Unexpected xmake.lua structure; refusing automatic dependency edit")
+original = original.replace(require_anchor,
+    'add_requires("mimalloc v2.2.4", {configs = {rltgenrandom = true}})\n' + require_anchor, 1)
+original = original.replace(packages_anchor,
+    packages_anchor.replace('"yaml-cpp")', '"yaml-cpp", "mimalloc")'), 1)
+buildfile.write_text(original, encoding="utf-8")
+print("Pinned and linked mimalloc v2.2.4 for TiltedCore compatibility.")
