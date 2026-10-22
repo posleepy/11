@@ -112,6 +112,6 @@ recipe_path.write_text(r'''package("tiltedcore")
     end)
 ''', encoding="utf-8")
 config = buildfile.read_text(encoding="utf-8")
-config = 'add_repositories("archive-xl-local local-xmake-repo", {rootdir = os.scriptdir()})\\n' + config
-buildfile.write_text(config.replace('\\\\n', '\\n'), encoding="utf-8")
+config = 'add_repositories("archive-xl-local local-xmake-repo", {rootdir = os.scriptdir()})\n' + config
+buildfile.write_text(config, encoding="utf-8")
 print("Pinned TiltedCore transitive mimalloc dependency to 2.2.4.")
