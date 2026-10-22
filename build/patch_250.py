@@ -218,3 +218,65 @@ edit("src/App/Archives/ArchiveService.cpp", [
 }'''),
 ])
 print(f"Added non-fatal address scan for {len(hashes)} ArchiveXL hashes and skip for known missing archive hook.")
+
+
+# Stage-two diagnostic: a clean startup probe without the broken 2.50 hooks.
+# The game 2.50 address library lacks these functions. Disabling these features
+# is NOT a fix and will disable most ArchiveXL-dependent content.
+guard = r"""
+#include <windows.h>
+#include <filesystem>
+#include <fstream>
+namespace {
+inline uintptr_t ArchiveXL250Resolve(uint32_t hash) noexcept {
+    auto mod = GetModuleHandleW(L"RED4ext.dll");
+    if (!mod) return 0;
+    auto func = reinterpret_cast<uintptr_t (*)(uint32_t)>(
+        GetProcAddress(mod, "RED4ext_ResolveAddress"));
+    return func ? func(hash) : 0;
+}
+inline void ArchiveXL250FeatureLog(const char* name) noexcept {
+    try {
+        std::ofstream out(std::filesystem::temp_directory_path() / "ArchiveXL-250-diag.log", std::ios::app);
+        out << name << std::endl;
+    } catch (...) {}
+}
+}
+"""
+edit("src/App/Extensions/ExtensionService.cpp", [
+    ('#include "Red/TweakDB.hpp"\n', '#include "Red/TweakDB.hpp"\n' + guard),
+    ('void App::ExtensionService::OnBootstrap()\n{\n    m_loader =',
+     '''void App::ExtensionService::OnBootstrap()
+{
+    ArchiveXL250FeatureLog("extensions.OnBootstrap.begin");
+    // Both are absent in the game 2.50 address library. Other extension
+    // hooks also depend on 2.31-only addresses: disable the entire module.
+    if (!ArchiveXL250Resolve(3602585178u) || !ArchiveXL250Resolve(1303056161u)) {
+        ArchiveXL250FeatureLog("extensions.OnBootstrap.SKIPPED_MISSING_250_ADDRESSES");
+        return;
+    }
+    m_loader ='''),
+    ('void App::ExtensionService::OnShutdown()\n{\n    m_loader->Unload();',
+     '''void App::ExtensionService::OnShutdown()
+{
+    if (!m_loader) return;
+    m_loader->Unload();'''),
+    ('void App::ExtensionService::Configure()\n{\n    std::unique_lock _(m_reloadMutex);',
+     '''void App::ExtensionService::Configure()
+{
+    if (!m_loader) return;
+    std::unique_lock _(m_reloadMutex);''')
+])
+edit("src/App/Patches/WorldWidgetLimitPatch.cpp", [
+    ('#include "WorldWidgetLimitPatch.hpp"\n', '#include "WorldWidgetLimitPatch.hpp"\n' + guard),
+    ('void App::WorldWidgetLimitPatch::OnBootstrap()\n{\n    auto& code =',
+     '''void App::WorldWidgetLimitPatch::OnBootstrap()
+{
+    ArchiveXL250FeatureLog("worldwidget.OnBootstrap.begin");
+    if (!ArchiveXL250Resolve(1693194103u)) {
+        ArchiveXL250FeatureLog("worldwidget.OnBootstrap.SKIPPED_MISSING_250_ADDRESS");
+        return;
+    }
+    auto& code =''')
+])
+print("Disabled 2.50-incompatible extension service and widget memory patch (diagnostic only).")
